@@ -145,7 +145,7 @@ export default function CadTool() {
           <PanelHeader title="Job Setup" meta="Upload and conversion inputs" />
           <button className="upload-box" type="button" onClick={() => inputRef.current?.click()}>
             <span>{file ? file.name : "Choose CAD file"}</span>
-            <small>{file ? formatBytes(file.size) : "DXF, STEP, STL, OBJ, IGES, 3DS, PLY"}</small>
+            <small>{file ? formatBytes(file.size) : "DXF, DWG, STEP, STL, OBJ, IGES, 3DS, PLY"}</small>
           </button>
           <input
             ref={inputRef}

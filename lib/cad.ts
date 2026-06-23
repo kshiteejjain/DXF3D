@@ -341,10 +341,79 @@ function convertPlyText(fileName: string, fileSize: number, text: string, densit
 function convert3dsBuffer(fileName: string, fileSize: number, data: ArrayBuffer, densityKgM3: number, unitsOverride?: string | null) {
   const geometry = emptyGeometry();
   const view = new DataView(data);
-  const vertices: [number, number, number][] = [];
+  let vertexCount = 0;
   let faceCount = 0;
+  let skippedFaceCount = 0;
+  const maxPreviewLines = 60000;
 
-  function walk(start: number, end: number) {
+  function appendFace(vertices: [number, number, number][], a: number, b: number, c: number) {
+    if (!vertices[a] || !vertices[b] || !vertices[c]) return;
+    faceCount += 1;
+
+    if (geometry.lines.length + 3 > maxPreviewLines) {
+      skippedFaceCount += 1;
+      return;
+    }
+
+    geometry.lines.push({ type: "line", start: vertices[a], end: vertices[b], layer: "3DS" });
+    geometry.lines.push({ type: "line", start: vertices[b], end: vertices[c], layer: "3DS" });
+    geometry.lines.push({ type: "line", start: vertices[c], end: vertices[a], layer: "3DS" });
+  }
+
+  function readObjectName(start: number, end: number) {
+    let cursor = start;
+    while (cursor < end && view.getUint8(cursor) !== 0) cursor += 1;
+    return Math.min(cursor + 1, end);
+  }
+
+  function readVertices(start: number, end: number) {
+    const vertices: [number, number, number][] = [];
+    if (start + 2 > end) return vertices;
+
+    const count = view.getUint16(start, true);
+    let cursor = start + 2;
+
+    for (let index = 0; index < count && cursor + 12 <= end; index += 1) {
+      vertices.push([view.getFloat32(cursor, true), view.getFloat32(cursor + 4, true), view.getFloat32(cursor + 8, true)]);
+      cursor += 12;
+    }
+
+    vertexCount += vertices.length;
+    return vertices;
+  }
+
+  function readFaces(start: number, end: number, vertices: [number, number, number][]) {
+    if (start + 2 > end) return;
+
+    const count = view.getUint16(start, true);
+    let cursor = start + 2;
+
+    for (let index = 0; index < count && cursor + 8 <= end; index += 1) {
+      appendFace(vertices, view.getUint16(cursor, true), view.getUint16(cursor + 2, true), view.getUint16(cursor + 4, true));
+      cursor += 8;
+    }
+  }
+
+  function parseMesh(start: number, end: number) {
+    let offset = start;
+    let vertices: [number, number, number][] = [];
+
+    while (offset + 6 <= end) {
+      const id = view.getUint16(offset, true);
+      const length = view.getUint32(offset + 2, true);
+      const chunkEnd = Math.min(offset + length, end, view.byteLength);
+      if (length < 6 || chunkEnd <= offset) break;
+
+      if (id === 0x4110) vertices = readVertices(offset + 6, chunkEnd);
+      if (id === 0x4120) readFaces(offset + 6, chunkEnd, vertices);
+
+      offset = chunkEnd;
+    }
+  }
+
+  function walkContainers(start: number, end: number, depth = 0) {
+    if (depth > 16) return;
+
     let offset = start;
     while (offset + 6 <= end && offset + 6 <= view.byteLength) {
       const id = view.getUint16(offset, true);
@@ -352,39 +421,24 @@ function convert3dsBuffer(fileName: string, fileSize: number, data: ArrayBuffer,
       const chunkEnd = Math.min(offset + length, end, view.byteLength);
       if (length < 6 || chunkEnd <= offset) break;
 
-      if (id === 0x4110 && offset + 8 <= chunkEnd) {
-        const count = view.getUint16(offset + 6, true);
-        let cursor = offset + 8;
-        for (let index = 0; index < count && cursor + 12 <= chunkEnd; index += 1) {
-          vertices.push([view.getFloat32(cursor, true), view.getFloat32(cursor + 4, true), view.getFloat32(cursor + 8, true)]);
-          cursor += 12;
-        }
+      if (id === 0x4000) {
+        walkContainers(readObjectName(offset + 6, chunkEnd), chunkEnd, depth + 1);
+      } else if (id === 0x4100) {
+        parseMesh(offset + 6, chunkEnd);
+      } else if (id === 0x4d4d || id === 0x3d3d) {
+        walkContainers(offset + 6, chunkEnd, depth + 1);
       }
 
-      if (id === 0x4120 && offset + 8 <= chunkEnd) {
-        const count = view.getUint16(offset + 6, true);
-        let cursor = offset + 8;
-        for (let index = 0; index < count && cursor + 8 <= chunkEnd; index += 1) {
-          const a = view.getUint16(cursor, true);
-          const b = view.getUint16(cursor + 2, true);
-          const c = view.getUint16(cursor + 4, true);
-          if (vertices[a] && vertices[b] && vertices[c]) {
-            geometry.lines.push({ type: "line", start: vertices[a], end: vertices[b], layer: "3DS" });
-            geometry.lines.push({ type: "line", start: vertices[b], end: vertices[c], layer: "3DS" });
-            geometry.lines.push({ type: "line", start: vertices[c], end: vertices[a], layer: "3DS" });
-            faceCount += 1;
-          }
-          cursor += 8;
-        }
-      }
-
-      walk(offset + 6, chunkEnd);
       offset = chunkEnd;
     }
   }
 
-  walk(0, view.byteLength);
-  return buildGenericResult(fileName, fileSize, "3DS", geometry, { VERTEX: vertices.length, FACE: faceCount }, ["3DS preview reads mesh chunks only; materials, cameras, and animation are ignored."], densityKgM3, unitsOverride);
+  walkContainers(0, view.byteLength);
+
+  const warnings = ["3DS preview reads mesh chunks only; materials, cameras, and animation are ignored."];
+  if (skippedFaceCount > 0) warnings.push(`Large 3DS mesh detected; preview was capped at ${maxPreviewLines.toLocaleString()} line segments.`);
+
+  return buildGenericResult(fileName, fileSize, "3DS", geometry, { VERTEX: vertexCount, FACE: faceCount }, warnings, densityKgM3, unitsOverride);
 }
 
 export function classifyDxf(

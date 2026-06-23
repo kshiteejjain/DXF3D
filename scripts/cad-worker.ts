@@ -32,4 +32,4 @@ worker.on("failed", (job, error) => {
   console.error(`CAD job ${job?.id ?? "unknown"} failed:`, error);
 });
 
-console.log("CAD worker listening for DXF conversion jobs.");
+console.log("CAD worker listening for conversion jobs.");

@@ -26,7 +26,7 @@ export default function CadViewer({ result }: CadViewerProps) {
         ) : null}
         <OrbitControls makeDefault enableDamping />
       </Canvas>
-      {!result ? <div className="viewer-empty">Upload a DXF file to preview supported geometry.</div> : null}
+      {!result ? <div className="viewer-empty">Upload a supported CAD file to preview geometry.</div> : null}
     </div>
   );
 }

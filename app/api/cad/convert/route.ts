@@ -40,7 +40,7 @@ export async function POST(request: Request) {
     const jobId = await withTimeout(enqueueCadJob(jobPayload), QUEUE_TIMEOUT_MS).catch((queueError) => {
       if (result.metadata.complexity === "medium") {
         result.metadata.warnings.push(
-          `${queueError instanceof Error ? queueError.message : "Redis queue is not responding."} Returned the medium DXF immediately.`
+          `${queueError instanceof Error ? queueError.message : "Redis queue is not responding."} Returned the medium CAD file immediately.`
         );
         return null;
       }
@@ -59,7 +59,7 @@ export async function POST(request: Request) {
       metadata: result.metadata
     });
   } catch (error) {
-    const message = error instanceof Error ? error.message : "Failed to convert DXF.";
+    const message = error instanceof Error ? error.message : "Failed to convert CAD file.";
     return NextResponse.json({ error: message }, { status: 400 });
   }
 }
@@ -71,7 +71,7 @@ async function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T
     return await Promise.race([
       promise,
       new Promise<T>((_resolve, reject) => {
-        timer = setTimeout(() => reject(new Error("Redis queue is not responding. Start Redis or use a simple DXF for immediate conversion.")), timeoutMs);
+        timer = setTimeout(() => reject(new Error("Redis queue is not responding. Start Redis or use a simple CAD file for immediate conversion.")), timeoutMs);
       })
     ]);
   } finally {
