@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { convertDxfText, validateDxfUpload } from "@/lib/cad";
+import { convertCadBuffer, validateCadUpload } from "@/lib/cad";
 import { enqueueCadJob } from "@/lib/cadQueue";
 
 export const runtime = "nodejs";
@@ -16,13 +16,13 @@ export async function POST(request: Request) {
     const unitsOverride = String(formData.get("unitsOverride") ?? "Auto");
 
     if (!(file instanceof File)) {
-      return NextResponse.json({ error: "A DXF file is required." }, { status: 400 });
+      return NextResponse.json({ error: "A CAD file is required." }, { status: 400 });
     }
 
-    validateDxfUpload(file.name, file.size);
+    validateCadUpload(file.name, file.size);
 
-    const dxfText = await file.text();
-    const result = convertDxfText(file.name, file.size, dxfText, extrusionDepth, densityKgM3, unitsOverride);
+    const fileBuffer = await file.arrayBuffer();
+    const result = convertCadBuffer(file.name, file.size, fileBuffer, extrusionDepth, densityKgM3, unitsOverride);
 
     if (result.metadata.complexity === "simple") {
       return NextResponse.json({ mode: "immediate", status: "completed", result });
@@ -31,7 +31,7 @@ export async function POST(request: Request) {
     const jobPayload = {
       fileName: file.name,
       fileSize: file.size,
-      dxfText,
+      fileBase64: Buffer.from(fileBuffer).toString("base64"),
       extrusionDepth,
       densityKgM3,
       unitsOverride

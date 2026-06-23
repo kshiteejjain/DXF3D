@@ -52,6 +52,7 @@ export type PreviewGeometry = {
 export type CadMetadata = {
   fileName: string;
   fileSize: number;
+  fileFormat: string;
   totalEntities: number;
   entityTypeCounts: Record<string, number>;
   supportedEntityCount: number;
@@ -148,21 +149,54 @@ const UNIT_TO_METERS: Record<string, number> = {
   Yards: 0.9144,
   Decimeters: 0.1
 };
+const SUPPORTED_EXTENSIONS = new Set(["dxf", "dwg", "obj", "stl", "step", "stp", "iges", "igs", "3ds", "ply"]);
 
 export const CAD_MAX_UPLOAD_BYTES = Number(process.env.CAD_MAX_UPLOAD_BYTES ?? 50 * 1024 * 1024);
 
-export function validateDxfUpload(fileName: string, fileSize: number) {
-  if (!fileName.toLowerCase().endsWith(".dxf")) {
-    throw new Error("Only .dxf files are supported.");
+export function validateCadUpload(fileName: string, fileSize: number) {
+  const extension = getFileExtension(fileName);
+
+  if (!SUPPORTED_EXTENSIONS.has(extension)) {
+    throw new Error(`Unsupported file type ".${extension || "unknown"}". Supported: ${[...SUPPORTED_EXTENSIONS].map((item) => `.${item}`).join(", ")}.`);
   }
 
   if (fileSize <= 0) {
-    throw new Error("The uploaded DXF file is empty.");
+    throw new Error("The uploaded CAD file is empty.");
   }
 
   if (fileSize > CAD_MAX_UPLOAD_BYTES) {
-    throw new Error(`The DXF file exceeds the configured ${formatBytes(CAD_MAX_UPLOAD_BYTES)} upload limit.`);
+    throw new Error(`The CAD file exceeds the configured ${formatBytes(CAD_MAX_UPLOAD_BYTES)} upload limit.`);
   }
+}
+
+export const validateDxfUpload = validateCadUpload;
+
+export function convertCadBuffer(
+  fileName: string,
+  fileSize: number,
+  data: ArrayBuffer,
+  extrusionDepth: number,
+  densityKgM3 = 7850,
+  unitsOverride?: string | null
+): CadConversionResult {
+  const extension = getFileExtension(fileName);
+  const text = isTextCadFormat(extension) ? decodeText(data) : "";
+
+  if (extension === "dxf" || extension === "dwg") {
+    if (extension === "dwg") {
+      return buildGenericResult(fileName, fileSize, "DWG", emptyGeometry(), {}, ["DWG is a proprietary binary format. Upload an exported DXF for exact entity conversion."], densityKgM3, unitsOverride);
+    }
+    return convertDxfText(fileName, fileSize, text, extrusionDepth, densityKgM3, unitsOverride);
+  }
+
+  if (extension === "obj") return convertObjText(fileName, fileSize, text, densityKgM3, unitsOverride);
+  if (extension === "stl") return convertStlBuffer(fileName, fileSize, data, densityKgM3, unitsOverride);
+  if (extension === "step" || extension === "stp") return convertStepText(fileName, fileSize, text, densityKgM3, unitsOverride);
+  if (extension === "iges" || extension === "igs") return convertIgesText(fileName, fileSize, text, densityKgM3, unitsOverride);
+  if (extension === "3ds") return convert3dsBuffer(fileName, fileSize, data, densityKgM3, unitsOverride);
+  if (extension === "ply") return convertPlyText(fileName, fileSize, text, densityKgM3, unitsOverride);
+
+  return buildGenericResult(fileName, fileSize, extension.toUpperCase(), emptyGeometry(), {}, ["No converter is available for this CAD format yet."], densityKgM3, unitsOverride);
 }
 
 export function convertDxfText(
@@ -190,6 +224,7 @@ export function convertDxfText(
     metadata: {
       fileName,
       fileSize,
+      fileFormat: "DXF",
       totalEntities: entities.length,
       entityTypeCounts,
       supportedEntityCount: entities.length - unsupportedEntityCount,
@@ -204,6 +239,152 @@ export function convertDxfText(
     },
     geometry
   };
+}
+
+function convertObjText(fileName: string, fileSize: number, text: string, densityKgM3: number, unitsOverride?: string | null) {
+  const vertices: [number, number, number][] = [];
+  const geometry = emptyGeometry();
+  let faceCount = 0;
+
+  for (const line of text.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (trimmed.startsWith("v ")) {
+      const [, x, y, z] = trimmed.split(/\s+/);
+      vertices.push([readNumber(x), readNumber(y), readNumber(z)]);
+    }
+
+    if (trimmed.startsWith("f ")) {
+      const indices = trimmed
+        .slice(2)
+        .trim()
+        .split(/\s+/)
+        .map((part) => Number(part.split("/")[0]) - 1)
+        .filter((index) => Number.isInteger(index) && vertices[index]);
+
+      if (indices.length >= 2) {
+        faceCount += 1;
+        for (let index = 0; index < indices.length; index += 1) {
+          const start = vertices[indices[index]];
+          const end = vertices[indices[(index + 1) % indices.length]];
+          geometry.lines.push({ type: "line", start, end, layer: "OBJ" });
+        }
+      }
+    }
+  }
+
+  return buildGenericResult(fileName, fileSize, "OBJ", geometry, { VERTEX: vertices.length, FACE: faceCount }, [], densityKgM3, unitsOverride);
+}
+
+function convertStlBuffer(fileName: string, fileSize: number, data: ArrayBuffer, densityKgM3: number, unitsOverride?: string | null) {
+  const text = decodeText(data);
+  return text.trimStart().startsWith("solid") && /facet\s+normal/i.test(text)
+    ? convertAsciiStlText(fileName, fileSize, text, densityKgM3, unitsOverride)
+    : convertBinaryStlBuffer(fileName, fileSize, data, densityKgM3, unitsOverride);
+}
+
+function convertAsciiStlText(fileName: string, fileSize: number, text: string, densityKgM3: number, unitsOverride?: string | null) {
+  const geometry = emptyGeometry();
+  const vertices: [number, number, number][] = [];
+
+  for (const match of text.matchAll(/vertex\s+([+-]?\d*\.?\d+(?:e[+-]?\d+)?)\s+([+-]?\d*\.?\d+(?:e[+-]?\d+)?)\s+([+-]?\d*\.?\d+(?:e[+-]?\d+)?)/gi)) {
+    vertices.push([readNumber(match[1]), readNumber(match[2]), readNumber(match[3])]);
+  }
+
+  appendTriangles(vertices, geometry, "STL");
+  return buildGenericResult(fileName, fileSize, "STL", geometry, { TRIANGLE: Math.floor(vertices.length / 3) }, ["STL is mesh-only; exact CAD features and sheet thickness are not available."], densityKgM3, unitsOverride);
+}
+
+function convertBinaryStlBuffer(fileName: string, fileSize: number, data: ArrayBuffer, densityKgM3: number, unitsOverride?: string | null) {
+  const geometry = emptyGeometry();
+  const view = new DataView(data);
+  const vertices: [number, number, number][] = [];
+  if (view.byteLength < 84) return buildGenericResult(fileName, fileSize, "STL", geometry, {}, ["Invalid or empty binary STL."], densityKgM3, unitsOverride);
+
+  const triangleCount = Math.min(view.getUint32(80, true), Math.floor((view.byteLength - 84) / 50));
+  for (let triangle = 0; triangle < triangleCount; triangle += 1) {
+    const offset = 84 + triangle * 50 + 12;
+    for (let vertex = 0; vertex < 3; vertex += 1) {
+      const vertexOffset = offset + vertex * 12;
+      vertices.push([view.getFloat32(vertexOffset, true), view.getFloat32(vertexOffset + 4, true), view.getFloat32(vertexOffset + 8, true)]);
+    }
+  }
+
+  appendTriangles(vertices, geometry, "STL");
+  return buildGenericResult(fileName, fileSize, "STL", geometry, { TRIANGLE: triangleCount }, ["STL is mesh-only; exact CAD features and sheet thickness are not available."], densityKgM3, unitsOverride);
+}
+
+function convertStepText(fileName: string, fileSize: number, text: string, densityKgM3: number, unitsOverride?: string | null) {
+  const points = readStepCartesianPoints(text);
+  const geometry = geometryFromPointCloud(points, "STEP");
+  return buildGenericResult(fileName, fileSize, "STEP", geometry, { CARTESIAN_POINT: points.length }, ["STEP topology requires a CAD kernel for exact B-Rep conversion; showing coordinate envelope preview."], densityKgM3, unitsOverride);
+}
+
+function convertIgesText(fileName: string, fileSize: number, text: string, densityKgM3: number, unitsOverride?: string | null) {
+  const points = readLooseCoordinateTriples(text);
+  const geometry = geometryFromPointCloud(points, "IGES");
+  return buildGenericResult(fileName, fileSize, "IGES", geometry, { COORDINATE: points.length }, ["IGES topology requires a CAD kernel for exact surface conversion; showing coordinate envelope preview."], densityKgM3, unitsOverride);
+}
+
+function convertPlyText(fileName: string, fileSize: number, text: string, densityKgM3: number, unitsOverride?: string | null) {
+  const lines = text.split(/\r?\n/);
+  const vertexCountLine = lines.find((line) => line.startsWith("element vertex"));
+  const vertexCount = Number(vertexCountLine?.split(/\s+/)[2] ?? 0);
+  const dataStart = lines.findIndex((line) => line.trim() === "end_header") + 1;
+  const vertices = lines.slice(dataStart, dataStart + vertexCount).map((line) => {
+    const [x, y, z] = line.trim().split(/\s+/);
+    return [readNumber(x), readNumber(y), readNumber(z)] as [number, number, number];
+  });
+  const geometry = geometryFromPointCloud(vertices, "PLY");
+  return buildGenericResult(fileName, fileSize, "PLY", geometry, { VERTEX: vertices.length }, ["PLY preview uses vertex envelope unless face data is converted by a mesh pipeline."], densityKgM3, unitsOverride);
+}
+
+function convert3dsBuffer(fileName: string, fileSize: number, data: ArrayBuffer, densityKgM3: number, unitsOverride?: string | null) {
+  const geometry = emptyGeometry();
+  const view = new DataView(data);
+  const vertices: [number, number, number][] = [];
+  let faceCount = 0;
+
+  function walk(start: number, end: number) {
+    let offset = start;
+    while (offset + 6 <= end && offset + 6 <= view.byteLength) {
+      const id = view.getUint16(offset, true);
+      const length = view.getUint32(offset + 2, true);
+      const chunkEnd = Math.min(offset + length, end, view.byteLength);
+      if (length < 6 || chunkEnd <= offset) break;
+
+      if (id === 0x4110 && offset + 8 <= chunkEnd) {
+        const count = view.getUint16(offset + 6, true);
+        let cursor = offset + 8;
+        for (let index = 0; index < count && cursor + 12 <= chunkEnd; index += 1) {
+          vertices.push([view.getFloat32(cursor, true), view.getFloat32(cursor + 4, true), view.getFloat32(cursor + 8, true)]);
+          cursor += 12;
+        }
+      }
+
+      if (id === 0x4120 && offset + 8 <= chunkEnd) {
+        const count = view.getUint16(offset + 6, true);
+        let cursor = offset + 8;
+        for (let index = 0; index < count && cursor + 8 <= chunkEnd; index += 1) {
+          const a = view.getUint16(cursor, true);
+          const b = view.getUint16(cursor + 2, true);
+          const c = view.getUint16(cursor + 4, true);
+          if (vertices[a] && vertices[b] && vertices[c]) {
+            geometry.lines.push({ type: "line", start: vertices[a], end: vertices[b], layer: "3DS" });
+            geometry.lines.push({ type: "line", start: vertices[b], end: vertices[c], layer: "3DS" });
+            geometry.lines.push({ type: "line", start: vertices[c], end: vertices[a], layer: "3DS" });
+            faceCount += 1;
+          }
+          cursor += 8;
+        }
+      }
+
+      walk(offset + 6, chunkEnd);
+      offset = chunkEnd;
+    }
+  }
+
+  walk(0, view.byteLength);
+  return buildGenericResult(fileName, fileSize, "3DS", geometry, { VERTEX: vertices.length, FACE: faceCount }, ["3DS preview reads mesh chunks only; materials, cameras, and animation are ignored."], densityKgM3, unitsOverride);
 }
 
 export function classifyDxf(
@@ -249,6 +430,141 @@ export function classifyDxf(
   }
 
   return "simple";
+}
+
+function buildGenericResult(
+  fileName: string,
+  fileSize: number,
+  fileFormat: string,
+  geometry: PreviewGeometry,
+  entityTypeCounts: Record<string, number>,
+  extraWarnings: string[],
+  densityKgM3: number,
+  unitsOverride?: string | null
+): CadConversionResult {
+  const boundingBox = calculateBoundingBox(geometry);
+  const units = normalizeUnits(unitsOverride);
+  const totalEntities = Object.values(entityTypeCounts).reduce((sum, count) => sum + count, 0);
+  const complexity = classifyDxf(fileSize, new Array(Math.min(totalEntities, 100000)).fill({ type: fileFormat }), entityTypeCounts, 1, boundingBox);
+  const warnings = [
+    ...extraWarnings,
+    ...buildWarnings(complexity, [], 0, geometry, boundingBox).filter((warning) => !extraWarnings.includes(warning))
+  ];
+
+  return {
+    metadata: {
+      fileName,
+      fileSize,
+      fileFormat,
+      totalEntities,
+      entityTypeCounts,
+      supportedEntityCount: totalEntities,
+      unsupportedEntityCount: 0,
+      unsupportedTypes: [],
+      layers: [fileFormat],
+      boundingBox,
+      units,
+      complexity,
+      warnings,
+      quantities: calculateQuantities(geometry, boundingBox, units, densityKgM3)
+    },
+    geometry
+  };
+}
+
+function emptyGeometry(): PreviewGeometry {
+  return { lines: [], circles: [], arcs: [], extrusions: [] };
+}
+
+function getFileExtension(fileName: string) {
+  return fileName.split(".").pop()?.trim().toLowerCase() ?? "";
+}
+
+function isTextCadFormat(extension: string) {
+  return ["dxf", "dwg", "obj", "step", "stp", "iges", "igs", "stl", "ply"].includes(extension);
+}
+
+function decodeText(data: ArrayBuffer) {
+  return new TextDecoder("utf-8", { fatal: false }).decode(data);
+}
+
+function appendTriangles(vertices: [number, number, number][], geometry: PreviewGeometry, layer: string) {
+  for (let index = 0; index + 2 < vertices.length; index += 3) {
+    const a = vertices[index];
+    const b = vertices[index + 1];
+    const c = vertices[index + 2];
+    geometry.lines.push({ type: "line", start: a, end: b, layer });
+    geometry.lines.push({ type: "line", start: b, end: c, layer });
+    geometry.lines.push({ type: "line", start: c, end: a, layer });
+  }
+}
+
+function geometryFromPointCloud(points: [number, number, number][], layer: string) {
+  const geometry = emptyGeometry();
+  if (points.length < 2) return geometry;
+
+  const box = points.reduce(
+    (current, point) => ({
+      minX: Math.min(current.minX, point[0]),
+      minY: Math.min(current.minY, point[1]),
+      minZ: Math.min(current.minZ, point[2]),
+      maxX: Math.max(current.maxX, point[0]),
+      maxY: Math.max(current.maxY, point[1]),
+      maxZ: Math.max(current.maxZ, point[2])
+    }),
+    { minX: Infinity, minY: Infinity, minZ: Infinity, maxX: -Infinity, maxY: -Infinity, maxZ: -Infinity }
+  );
+
+  const corners: [number, number, number][] = [
+    [box.minX, box.minY, box.minZ],
+    [box.maxX, box.minY, box.minZ],
+    [box.maxX, box.maxY, box.minZ],
+    [box.minX, box.maxY, box.minZ],
+    [box.minX, box.minY, box.maxZ],
+    [box.maxX, box.minY, box.maxZ],
+    [box.maxX, box.maxY, box.maxZ],
+    [box.minX, box.maxY, box.maxZ]
+  ];
+  const edges = [
+    [0, 1],
+    [1, 2],
+    [2, 3],
+    [3, 0],
+    [4, 5],
+    [5, 6],
+    [6, 7],
+    [7, 4],
+    [0, 4],
+    [1, 5],
+    [2, 6],
+    [3, 7]
+  ];
+
+  for (const [start, end] of edges) {
+    geometry.lines.push({ type: "line", start: corners[start], end: corners[end], layer });
+  }
+
+  return geometry;
+}
+
+function readStepCartesianPoints(text: string): [number, number, number][] {
+  const points: [number, number, number][] = [];
+  const number = "([+-]?(?:\\d+(?:\\.\\d*)?|\\.\\d+)(?:E[+-]?\\d+)?)";
+  const pattern = new RegExp(`CARTESIAN_POINT\\s*\\([^()]*\\(\\s*${number}\\s*,\\s*${number}\\s*,\\s*${number}\\s*\\)`, "gi");
+  for (const match of text.matchAll(pattern)) {
+    points.push([readNumber(match[1]), readNumber(match[2]), readNumber(match[3])]);
+  }
+  return points;
+}
+
+function readLooseCoordinateTriples(text: string): [number, number, number][] {
+  const points: [number, number, number][] = [];
+  const pattern = /([+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[DE][+-]?\d+)?)\s*,\s*([+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[DE][+-]?\d+)?)\s*,\s*([+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[DE][+-]?\d+)?)/gi;
+  for (const match of text.matchAll(pattern)) {
+    points.push([readNumber(match[1].replace(/D/i, "E")), readNumber(match[2].replace(/D/i, "E")), readNumber(match[3].replace(/D/i, "E"))]);
+    if (points.length > 20000) break;
+  }
+  return points;
 }
 
 function buildPreviewGeometry(parsed: DxfDocument, entities: DxfEntity[], extrusionDepth: number): PreviewGeometry {
@@ -545,7 +861,7 @@ function buildWarnings(
     warnings.push(`${unsupportedEntityCount} unsupported entities were skipped: ${unsupportedTypes.join(", ")}.`);
   }
   if (complexity !== "simple") {
-    warnings.push(`${complexity[0].toUpperCase()}${complexity.slice(1)} DXF detected; queued processing is used outside simple conversions.`);
+    warnings.push(`${complexity[0].toUpperCase()}${complexity.slice(1)} CAD file detected; queued processing is used outside simple conversions.`);
   }
   if (!boundingBox) warnings.push("No supported preview geometry was found.");
   if (geometry.extrusions.length === 0) warnings.push("No closed supported polylines were available for extrusion.");

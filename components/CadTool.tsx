@@ -11,6 +11,7 @@ type ConvertResponse =
 
 const CONVERT_TIMEOUT_MS = 15000;
 const UNIT_OPTIONS = ["Auto", "Millimeters", "Centimeters", "Meters", "Inches", "Feet"] as const;
+const ACCEPTED_FORMATS = ".dxf,.dwg,.obj,.stl,.step,.stp,.iges,.igs,.3ds,.ply";
 const CadViewer = dynamic(() => import("./CadViewer"), { ssr: false });
 
 export default function CadTool() {
@@ -18,7 +19,7 @@ export default function CadTool() {
   const [extrusionDepth, setExtrusionDepth] = useState(10);
   const [densityKgM3, setDensityKgM3] = useState(7850);
   const [unitsOverride, setUnitsOverride] = useState<(typeof UNIT_OPTIONS)[number]>("Auto");
-  const [status, setStatus] = useState("Waiting for a DXF upload.");
+  const [status, setStatus] = useState("Waiting for a CAD upload.");
   const [jobId, setJobId] = useState<string | null>(null);
   const [result, setResult] = useState<CadConversionResult | null>(null);
   const [queuedMetadata, setQueuedMetadata] = useState<CadConversionResult["metadata"] | null>(null);
@@ -66,7 +67,7 @@ export default function CadTool() {
 
   async function convert() {
     if (!file) {
-      setError("Choose a .dxf file first.");
+      setError("Choose a supported CAD file first.");
       return;
     }
 
@@ -116,10 +117,10 @@ export default function CadTool() {
     <main className="page">
       <section className="app-bar">
         <div className="brand-block">
-          <div className="brand-mark">DX</div>
+          <div className="brand-mark">FS</div>
           <div>
-            <p className="eyebrow">DXF to 3D Preview</p>
-            <h1>CAD Preview Engine</h1>
+            <p className="eyebrow">Enterprise CAD Intelligence</p>
+            <h1>ForgeSight</h1>
           </div>
         </div>
         <div className="app-actions">
@@ -143,14 +144,14 @@ export default function CadTool() {
         <aside className="panel controls-panel">
           <PanelHeader title="Job Setup" meta="Upload and conversion inputs" />
           <button className="upload-box" type="button" onClick={() => inputRef.current?.click()}>
-            <span>{file ? file.name : "Choose DXF file"}</span>
-            <small>{file ? formatBytes(file.size) : "Accepted format: .dxf"}</small>
+            <span>{file ? file.name : "Choose CAD file"}</span>
+            <small>{file ? formatBytes(file.size) : "DXF, STEP, STL, OBJ, IGES, 3DS, PLY"}</small>
           </button>
           <input
             ref={inputRef}
             className="sr-only"
             type="file"
-            accept=".dxf"
+            accept={ACCEPTED_FORMATS}
             onChange={(event) => setFile(event.target.files?.[0] ?? null)}
           />
 
@@ -209,6 +210,7 @@ export default function CadTool() {
             <>
               <dl className="meta-grid">
                 <Meta label="File" value={metadata.fileName} />
+                <Meta label="Format" value={metadata.fileFormat} />
                 <Meta label="Size" value={formatBytes(metadata.fileSize)} />
                 <Meta label="Complexity" value={metadata.complexity} />
                 <Meta label="Entities" value={metadata.totalEntities.toLocaleString()} />

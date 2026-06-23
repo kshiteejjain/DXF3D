@@ -39,10 +39,10 @@ export default function LoginPage() {
     <main className="login-page">
       <section className="login-shell">
         <div className="login-visual">
-          <div className="login-mark">DX</div>
+          <div className="login-mark">FS</div>
           <div>
             <p className="eyebrow">Secure CAD Workspace</p>
-            <h1>DXF 3D Preview Engine</h1>
+            <h1>ForgeSight CAD Intelligence</h1>
             <p className="login-copy">Authenticated access for file conversion, quantity extraction, and 3D inspection.</p>
           </div>
         </div>

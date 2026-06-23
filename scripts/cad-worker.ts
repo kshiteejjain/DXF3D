@@ -1,5 +1,5 @@
 import { Worker } from "bullmq";
-import { convertDxfText } from "../lib/cad";
+import { convertCadBuffer } from "../lib/cad";
 import { queueName, redisConnection, setCadJobResult, setCadJobState, type CadQueuePayload } from "../lib/cadQueue";
 
 const worker = new Worker<CadQueuePayload>(
@@ -8,7 +8,8 @@ const worker = new Worker<CadQueuePayload>(
     setCadJobState(job.id ?? "", "processing", 10);
     await job.updateProgress(10);
 
-    const result = convertDxfText(job.data.fileName, job.data.fileSize, job.data.dxfText, job.data.extrusionDepth, job.data.densityKgM3, job.data.unitsOverride);
+    const buffer = Buffer.from(job.data.fileBase64, "base64");
+    const result = convertCadBuffer(job.data.fileName, job.data.fileSize, buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength), job.data.extrusionDepth, job.data.densityKgM3, job.data.unitsOverride);
 
     await job.updateProgress(100);
     if (job.id) setCadJobResult(job.id, result);

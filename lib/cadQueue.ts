@@ -14,7 +14,7 @@ declare global {
 export type CadQueuePayload = {
   fileName: string;
   fileSize: number;
-  dxfText: string;
+  fileBase64: string;
   extrusionDepth: number;
   densityKgM3: number;
   unitsOverride?: string;
