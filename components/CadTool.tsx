@@ -125,6 +125,9 @@ export default function CadTool() {
         <div className="app-actions">
           <span className="system-label">Node Runtime</span>
           <div className={`status-pill status-${statusTone}`}>{status}</div>
+          <a className="ghost-button" href="/api/auth/logout">
+            Logout
+          </a>
         </div>
       </section>
 
