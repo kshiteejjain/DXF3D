@@ -1,14 +1,14 @@
 import { NextResponse } from "next/server";
-import { AUTH_COOKIE_NAME, AUTH_SESSION_VALUE, isValidPassword } from "@/lib/auth";
+import { AUTH_COOKIE_NAME, AUTH_SESSION_VALUE, isValidCredentials } from "@/lib/auth";
 
 export const runtime = "nodejs";
 
 export async function POST(request: Request) {
   try {
-    const { password } = (await request.json()) as { password?: string };
+    const { username, password } = (await request.json()) as { username?: string; password?: string };
 
-    if (!password || !isValidPassword(password)) {
-      return NextResponse.json({ error: "Invalid password." }, { status: 401 });
+    if (!username || !password || !isValidCredentials(username, password)) {
+      return NextResponse.json({ error: "Invalid username or password." }, { status: 401 });
     }
 
     const response = NextResponse.json({ ok: true });

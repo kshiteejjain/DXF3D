@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 
 export default function LoginPage() {
   const router = useRouter();
+  const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
@@ -18,13 +19,14 @@ export default function LoginPage() {
       const response = await fetch("/api/auth/login", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ password })
+        body: JSON.stringify({ username, password })
       });
       const payload = (await response.json()) as { error?: string };
 
       if (!response.ok) throw new Error(payload.error ?? "Sign in failed.");
 
-      router.replace("/cad");
+      const nextPath = new URLSearchParams(window.location.search).get("next") || "/cad";
+      router.replace(nextPath.startsWith("/") ? nextPath : "/cad");
       router.refresh();
     } catch (loginError) {
       setError(loginError instanceof Error ? loginError.message : "Sign in failed.");
@@ -54,8 +56,13 @@ export default function LoginPage() {
           </div>
 
           <label className="field">
+            <span>Username</span>
+            <input autoFocus type="text" value={username} onChange={(event) => setUsername(event.target.value)} />
+          </label>
+
+          <label className="field">
             <span>Password</span>
-            <input autoFocus type="password" value={password} onChange={(event) => setPassword(event.target.value)} />
+            <input type="password" value={password} onChange={(event) => setPassword(event.target.value)} />
           </label>
 
           <button className="primary-button" disabled={loading} type="submit">
