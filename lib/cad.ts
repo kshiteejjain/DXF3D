@@ -118,7 +118,7 @@ type Transform2D = {
   rotation: number;
 };
 
-const SUPPORTED_TYPES = new Set(["LINE", "POLYLINE", "LWPOLYLINE", "CIRCLE", "ARC", "INSERT"]);
+const SUPPORTED_TYPES = new Set(["LINE", "POLYLINE", "LWPOLYLINE", "CIRCLE", "ARC", "ELLIPSE", "SPLINE", "SOLID", "3DFACE", "INSERT", "DIMENSION"]);
 const HEAVY_TYPES = new Set(["SPLINE", "HATCH", "INSERT", "DIMENSION", "TEXT", "MTEXT", "BLOCK"]);
 const UNIT_CODES: Record<number, string> = {
   0: "Unitless",
@@ -174,7 +174,7 @@ export function convertDxfText(
   unitsOverride?: string | null
 ): CadConversionResult {
   const parser = new DxfParser();
-  const parsed = parser.parseSync(dxfText) as DxfDocument;
+  const parsed = parser.parseSync(normalizeDxfText(dxfText)) as DxfDocument;
   const entities = Array.isArray(parsed.entities) ? (parsed.entities as DxfEntity[]) : [];
   const entityTypeCounts = countEntityTypes(entities);
   const unsupportedTypes = Object.keys(entityTypeCounts).filter((type) => !SUPPORTED_TYPES.has(type));
@@ -291,9 +291,19 @@ function appendEntitiesToGeometry(
       if (center && radius > 0) geometry.arcs.push({ type: "arc", center: transformPoint3(center, transform), radius, startAngle, endAngle, layer });
     }
 
+    if (type === "ELLIPSE") {
+      const points = readEllipsePoints(entity).map((point) => transformPoint3(point, transform));
+      appendSegmentedLine(points, geometry, layer, false);
+    }
+
+    if (type === "SPLINE") {
+      const points = readSplinePoints(entity).map((point) => transformPoint3(point, transform));
+      appendSegmentedLine(points, geometry, layer, isEntityClosed(entity) || pointsFormClosedLoop(points.map(toPoint2)));
+    }
+
     if (type === "POLYLINE" || type === "LWPOLYLINE") {
       const points = readPolylinePoints(entity).map((point) => transformPoint2(point, transform));
-      const closed = Boolean(entity.closed) || Boolean(entity.shape) || pointsFormClosedLoop(points);
+      const closed = isEntityClosed(entity) || pointsFormClosedLoop(points);
 
       for (let index = 0; index < points.length - 1; index += 1) {
         geometry.lines.push({ type: "line", start: toPoint3(points[index]), end: toPoint3(points[index + 1]), layer });
@@ -309,6 +319,14 @@ function appendEntitiesToGeometry(
 
     if (type === "INSERT") {
       appendInsertToGeometry(parsed, entity, extrusionDepth, geometry, transform, depth);
+    }
+
+    if (type === "DIMENSION") {
+      appendDimensionToGeometry(parsed, entity, extrusionDepth, geometry, transform, depth);
+    }
+
+    if (type === "SOLID" || type === "3DFACE") {
+      appendFaceEntity(entity, extrusionDepth, geometry, transform, layer);
     }
   }
 }
@@ -357,6 +375,40 @@ function appendInsertToGeometry(
 
       appendEntitiesToGeometry(parsed, blockEntities, extrusionDepth, geometry, localTransform, depth + 1);
     }
+  }
+}
+
+function appendDimensionToGeometry(
+  parsed: DxfDocument,
+  dimension: DxfEntity,
+  extrusionDepth: number,
+  geometry: PreviewGeometry,
+  parentTransform: Transform2D,
+  depth: number
+) {
+  const blockName = readString(dimension.block);
+  const block = blockName ? parsed.blocks?.[blockName] : undefined;
+  const blockEntities = Array.isArray(block?.entities) ? block.entities : [];
+  if (blockEntities.length) appendEntitiesToGeometry(parsed, blockEntities, extrusionDepth, geometry, parentTransform, depth + 1);
+}
+
+function appendFaceEntity(entity: DxfEntity, extrusionDepth: number, geometry: PreviewGeometry, transform: Transform2D, layer?: string) {
+  const rawPoints = readFacePoints(entity);
+  const points = rawPoints.map((point) => transformPoint2([point[0], point[1]], transform));
+
+  if (points.length < 3) return;
+
+  appendSegmentedLine(points.map(toPoint3), geometry, layer, true);
+  if (extrusionDepth > 0) geometry.extrusions.push({ type: "extrusion", points, depth: extrusionDepth, layer });
+}
+
+function appendSegmentedLine(points: [number, number, number][], geometry: PreviewGeometry, layer?: string, closed = false) {
+  for (let index = 0; index < points.length - 1; index += 1) {
+    geometry.lines.push({ type: "line", start: points[index], end: points[index + 1], layer });
+  }
+
+  if (closed && points.length > 2 && !samePoint2(toPoint2(points[0]), toPoint2(points[points.length - 1]))) {
+    geometry.lines.push({ type: "line", start: points[points.length - 1], end: points[0], layer });
   }
 }
 
@@ -436,6 +488,10 @@ function collectLayers(parsed: Record<string, unknown>, entities: DxfEntity[]) {
   }
 
   return [...layers].sort((a, b) => a.localeCompare(b));
+}
+
+function normalizeDxfText(text: string) {
+  return text.replace(/^\uFEFF/, "").replace(/\u0000/g, "");
 }
 
 function calculateBoundingBox(geometry: PreviewGeometry): BoundingBox | null {
@@ -582,10 +638,57 @@ function readLinePoints(entity: DxfEntity): [PreviewLine["start"] | null, Previe
 }
 
 function readPolylinePoints(entity: DxfEntity): [number, number][] {
-  const vertices = Array.isArray(entity.vertices) ? entity.vertices : [];
+  const vertices = Array.isArray(entity.vertices) ? entity.vertices : Array.isArray(entity.points) ? entity.points : [];
   return vertices
     .map((vertex) => readPoint2(vertex))
     .filter((point): point is [number, number] => Boolean(point));
+}
+
+function readSplinePoints(entity: DxfEntity): [number, number, number][] {
+  const fitPoints = Array.isArray(entity.fitPoints) ? entity.fitPoints : [];
+  const controlPoints = Array.isArray(entity.controlPoints) ? entity.controlPoints : [];
+  const points = fitPoints.length >= 2 ? fitPoints : controlPoints;
+
+  return points
+    .map((point) => readPoint3(point))
+    .filter((point): point is [number, number, number] => Boolean(point));
+}
+
+function readEllipsePoints(entity: DxfEntity): [number, number, number][] {
+  const center = readPoint3(entity.center);
+  const majorAxisEndPoint = readPoint3(entity.majorAxisEndPoint);
+  const axisRatio = Math.abs(readNumber(entity.axisRatio) || 1);
+  const startAngle = readRotation(entity.startAngle ?? 0);
+  const endAngleRaw = entity.endAngle === undefined ? Math.PI * 2 : readRotation(entity.endAngle);
+  const endAngle = endAngleRaw <= startAngle ? endAngleRaw + Math.PI * 2 : endAngleRaw;
+
+  if (!center || !majorAxisEndPoint) return [];
+
+  const majorLength = Math.hypot(majorAxisEndPoint[0], majorAxisEndPoint[1]);
+  const rotation = Math.atan2(majorAxisEndPoint[1], majorAxisEndPoint[0]);
+  const minorLength = majorLength * axisRatio;
+  const steps = Math.max(16, Math.ceil((Math.abs(endAngle - startAngle) / (Math.PI * 2)) * 96));
+  const points: [number, number, number][] = [];
+
+  for (let index = 0; index <= steps; index += 1) {
+    const angle = startAngle + ((endAngle - startAngle) * index) / steps;
+    const x = Math.cos(angle) * majorLength;
+    const y = Math.sin(angle) * minorLength;
+    const cos = Math.cos(rotation);
+    const sin = Math.sin(rotation);
+    points.push([center[0] + x * cos - y * sin, center[1] + x * sin + y * cos, center[2]]);
+  }
+
+  return points;
+}
+
+function readFacePoints(entity: DxfEntity): [number, number, number][] {
+  const candidates = Array.isArray(entity.points) ? entity.points : Array.isArray(entity.vertices) ? entity.vertices : [];
+  const points = candidates
+    .map((point) => readPoint3(point))
+    .filter((point): point is [number, number, number] => Boolean(point));
+
+  return removeDuplicateTail(points);
 }
 
 function readPoint2(value: unknown): [number, number] | null {
@@ -600,6 +703,23 @@ function readPoint3(value: unknown): [number, number, number] | null {
   const point = readPoint2(value);
   if (!point || !value || typeof value !== "object") return null;
   return [point[0], point[1], readNumber((value as Record<string, unknown>).z)];
+}
+
+function removeDuplicateTail(points: [number, number, number][]) {
+  if (points.length < 2) return points;
+  const unique = [...points];
+  while (unique.length > 1) {
+    const last = unique[unique.length - 1];
+    const previous = unique[unique.length - 2];
+    if (Math.hypot(last[0] - previous[0], last[1] - previous[1], last[2] - previous[2]) > 1e-6) break;
+    unique.pop();
+  }
+  return unique;
+}
+
+function isEntityClosed(entity: DxfEntity) {
+  const flags = readNumber(entity.flags ?? entity.flag);
+  return Boolean(entity.closed) || Boolean(entity.shape) || (flags & 1) === 1;
 }
 
 function identityTransform(): Transform2D {
