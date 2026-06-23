@@ -1,7 +1,7 @@
 "use client";
 
+import dynamic from "next/dynamic";
 import { useEffect, useMemo, useRef, useState } from "react";
-import CadViewer from "./CadViewer";
 import type { CadConversionResult, CadJobSnapshot, CadQuantities } from "@/lib/cad";
 
 type ConvertResponse =
@@ -11,6 +11,7 @@ type ConvertResponse =
 
 const CONVERT_TIMEOUT_MS = 15000;
 const UNIT_OPTIONS = ["Auto", "Millimeters", "Centimeters", "Meters", "Inches", "Feet"] as const;
+const CadViewer = dynamic(() => import("./CadViewer"), { ssr: false });
 
 export default function CadTool() {
   const [file, setFile] = useState<File | null>(null);

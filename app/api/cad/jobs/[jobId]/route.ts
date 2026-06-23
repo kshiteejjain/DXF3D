@@ -3,9 +3,9 @@ import { readCadJob } from "@/lib/cadQueue";
 
 export const runtime = "nodejs";
 
-export async function GET(_request: Request, context: { params: Promise<{ jobId: string }> | { jobId: string } }) {
+export async function GET(_request: Request, context: { params: Promise<{ jobId: string }> }) {
   try {
-    const { jobId } = await Promise.resolve(context.params);
+    const { jobId } = await context.params;
     const job = await readCadJob(jobId);
 
     if (!job) {
