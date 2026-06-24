@@ -42,11 +42,18 @@ export type PreviewExtrusion = {
   layer?: string;
 };
 
+export type PreviewTriangle = {
+  type: "triangle";
+  points: [[number, number, number], [number, number, number], [number, number, number]];
+  layer?: string;
+};
+
 export type PreviewGeometry = {
   lines: PreviewLine[];
   circles: PreviewCircle[];
   arcs: PreviewArc[];
   extrusions: PreviewExtrusion[];
+  triangles: PreviewTriangle[];
 };
 
 export type CadMetadata = {
@@ -263,6 +270,11 @@ function convertObjText(fileName: string, fileSize: number, text: string, densit
 
       if (indices.length >= 2) {
         faceCount += 1;
+        if (indices.length >= 3) {
+          for (let index = 1; index < indices.length - 1; index += 1) {
+            geometry.triangles.push({ type: "triangle", points: [vertices[indices[0]], vertices[indices[index]], vertices[indices[index + 1]]], layer: "OBJ" });
+          }
+        }
         for (let index = 0; index < indices.length; index += 1) {
           const start = vertices[indices[index]];
           const end = vertices[indices[(index + 1) % indices.length]];
@@ -349,6 +361,7 @@ function convert3dsBuffer(fileName: string, fileSize: number, data: ArrayBuffer,
   function appendFace(vertices: [number, number, number][], a: number, b: number, c: number) {
     if (!vertices[a] || !vertices[b] || !vertices[c]) return;
     faceCount += 1;
+    geometry.triangles.push({ type: "triangle", points: [vertices[a], vertices[b], vertices[c]], layer: "3DS" });
 
     if (geometry.lines.length + 3 > maxPreviewLines) {
       skippedFaceCount += 1;
@@ -527,7 +540,7 @@ function buildGenericResult(
 }
 
 function emptyGeometry(): PreviewGeometry {
-  return { lines: [], circles: [], arcs: [], extrusions: [] };
+  return { lines: [], circles: [], arcs: [], extrusions: [], triangles: [] };
 }
 
 function getFileExtension(fileName: string) {
@@ -547,6 +560,7 @@ function appendTriangles(vertices: [number, number, number][], geometry: Preview
     const a = vertices[index];
     const b = vertices[index + 1];
     const c = vertices[index + 2];
+    geometry.triangles.push({ type: "triangle", points: [a, b, c], layer });
     geometry.lines.push({ type: "line", start: a, end: b, layer });
     geometry.lines.push({ type: "line", start: b, end: c, layer });
     geometry.lines.push({ type: "line", start: c, end: a, layer });
@@ -622,7 +636,7 @@ function readLooseCoordinateTriples(text: string): [number, number, number][] {
 }
 
 function buildPreviewGeometry(parsed: DxfDocument, entities: DxfEntity[], extrusionDepth: number): PreviewGeometry {
-  const geometry: PreviewGeometry = { lines: [], circles: [], arcs: [], extrusions: [] };
+  const geometry: PreviewGeometry = { lines: [], circles: [], arcs: [], extrusions: [], triangles: [] };
   appendEntitiesToGeometry(parsed, entities, extrusionDepth, geometry, identityTransform(), 0);
   appendLineLoopExtrusions(geometry, extrusionDepth);
   return geometry;
@@ -952,7 +966,19 @@ function calculateQuantities(
 }
 
 function calculateVolume(geometry: PreviewGeometry) {
-  return geometry.extrusions.reduce((sum, extrusion) => sum + Math.abs(polygonArea(extrusion.points)) * extrusion.depth, 0);
+  const extrusionVolume = geometry.extrusions.reduce((sum, extrusion) => sum + Math.abs(polygonArea(extrusion.points)) * extrusion.depth, 0);
+  if (extrusionVolume > 0) return extrusionVolume;
+
+  const meshVolume = geometry.triangles.reduce((sum, triangle) => {
+    const [a, b, c] = triangle.points;
+    return sum + (
+      a[0] * (b[1] * c[2] - b[2] * c[1]) -
+      a[1] * (b[0] * c[2] - b[2] * c[0]) +
+      a[2] * (b[0] * c[1] - b[1] * c[0])
+    ) / 6;
+  }, 0);
+
+  return Math.abs(meshVolume);
 }
 
 function calculateCuttingLength(geometry: PreviewGeometry) {

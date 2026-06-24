@@ -132,14 +132,6 @@ export default function CadTool() {
         </div>
       </section>
 
-      <section className="summary-strip">
-        <SummaryMetric label="Complexity" value={metadata?.complexity ?? "Pending"} />
-        <SummaryMetric label="Entities" value={metadata ? metadata.totalEntities.toLocaleString() : "0"} />
-        <SummaryMetric label="Volume" value={metadata ? formatVolume(metadata.quantities.volume) : "Not available"} />
-        <SummaryMetric label="Weight" value={metadata ? formatWeight(metadata.quantities.weight) : "Not available"} />
-        <SummaryMetric label="Cutting" value={metadata ? formatMeters(metadata.quantities.cuttingMeters) : "Not available"} />
-      </section>
-
       <section className="workspace">
         <aside className="panel controls-panel">
           <PanelHeader title="Job Setup" meta="Upload and conversion inputs" />
@@ -198,7 +190,7 @@ export default function CadTool() {
             </div>
             <div className="viewer-stats">
               <span>Lines {result?.geometry.lines.length ?? 0}</span>
-              <span>Solids {result?.geometry.extrusions.length ?? 0}</span>
+              <span>Solids {(result?.geometry.extrusions.length ?? 0) + ((result?.geometry.triangles.length ?? 0) > 0 ? 1 : 0)}</span>
             </div>
           </div>
           <CadViewer result={result} />
@@ -231,6 +223,9 @@ export default function CadTool() {
 
               <div className="sub-panel">
                 <h3>Quantities</h3>
+                <p className="quantity-note">
+                  Exact production values require confirmed drawing units, closed geometry, material density, and cut/mark layer rules.
+                </p>
                 <dl className="meta-grid">
                   <Meta label="Dimensions" value={formatDimensions(metadata.quantities.dimensions)} />
                   <Meta label="Volume" value={formatVolume(metadata.quantities.volume)} />
@@ -287,15 +282,6 @@ function PanelHeader({ title, meta }: { title: string; meta: string }) {
         <h2>{title}</h2>
         <p>{meta}</p>
       </div>
-    </div>
-  );
-}
-
-function SummaryMetric({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="summary-metric">
-      <span>{label}</span>
-      <strong>{value}</strong>
     </div>
   );
 }
